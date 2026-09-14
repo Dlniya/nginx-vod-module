@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.9.3](https://github.com/dio-az/nginx-vod-module/compare/v1.9.2...v1.9.3) (2026-09-14)
+
+### Bug Fixes
+
+- Fix `reference_count` size in sidx64 atom ([#146](https://github.com/dio-az/nginx-vod-module/pull/146))
+- Fix media set string array parsing ([#143](https://github.com/dio-az/nginx-vod-module/pull/143))
+
 ## [1.9.2](https://github.com/dio-az/nginx-vod-module/compare/v1.9.1...v1.9.2) (2026-09-08)
 
 ### Bug Fixes
