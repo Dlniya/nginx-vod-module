@@ -1598,7 +1598,7 @@ dash_packager_write_sidx64_atom(u_char* p, sidx_params_t* sidx_params, uint32_t 
 	write_be64(p, sidx_params->earliest_pres_time);    // earliest_presentation_time
 	write_be64(p, 0LL);                                // first_offset
 	write_be16(p, 0);                                  // reserved
-	write_be32(p, 1);                                  // reference_count
+	write_be16(p, 1);                                  // reference_count
 	write_be32(p, reference_size);                     // reference_type(1), referenced_size(31)
 	write_be32(p, sidx_params->total_frames_duration); // subsegment_duration
 	write_be32(p, 0x90000000); // starts_with_SAP(1) = 1, SAP_type(3) = 1, SAP_delta_time(28) = 0
