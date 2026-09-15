@@ -7,6 +7,7 @@
 #include <math.h>
 #include <libswscale/swscale.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
 #endif // VOD_HAVE_LIB_SW_SCALE
 
 #define vod_abs_diff(val1, val2) ((val2) > (val1) ? (val2) - (val1) : (val1) - (val2))
@@ -177,7 +178,9 @@ thumb_grabber_init_encoder(
 	encoder->width = width;
 	encoder->height = height;
 	encoder->time_base = (AVRational){1, 1};
-	encoder->pix_fmt = AV_PIX_FMT_YUVJ420P;
+	// NOTE: limited-range sources render washed out without libswscale
+	encoder->pix_fmt = AV_PIX_FMT_YUV420P;
+	encoder->color_range = AVCOL_RANGE_JPEG;
 
 	avrc = avcodec_open2(encoder, encoder_codec, NULL);
 	if (avrc < 0) {
@@ -419,6 +422,33 @@ thumb_grabber_init_state(
 	return VOD_OK;
 }
 
+static enum AVPixelFormat
+thumb_grabber_non_j_pix_fmt(enum AVPixelFormat pix_fmt) {
+	switch (pix_fmt) {
+	case AV_PIX_FMT_YUVJ420P:
+		return AV_PIX_FMT_YUV420P;
+
+	case AV_PIX_FMT_YUVJ422P:
+		return AV_PIX_FMT_YUV422P;
+
+	case AV_PIX_FMT_YUVJ444P:
+		return AV_PIX_FMT_YUV444P;
+
+	default:
+		return pix_fmt;
+	}
+}
+
+static void
+thumb_grabber_normalize_pix_fmt(AVFrame* frame) {
+	enum AVPixelFormat pix_fmt = thumb_grabber_non_j_pix_fmt(frame->format);
+
+	if (pix_fmt != frame->format) {
+		frame->format = pix_fmt;
+		frame->color_range = AVCOL_RANGE_JPEG;
+	}
+}
+
 static vod_status_t
 thumb_grabber_decode_frames(thumb_grabber_state_t* state) {
 	AVFrame* decoded_frame;
@@ -443,6 +473,7 @@ thumb_grabber_decode_frames(thumb_grabber_state_t* state) {
 		        || vod_abs_diff(decoded_frame->pts, state->target_pts)
 		               < vod_abs_diff(state->decoded_frame->pts, state->target_pts))) {
 			av_frame_free(&state->decoded_frame);
+			thumb_grabber_normalize_pix_fmt(decoded_frame);
 			state->decoded_frame = decoded_frame;
 			continue;
 		}
@@ -605,24 +636,36 @@ thumb_grabber_resize_frame(thumb_grabber_state_t* state) {
 
 	output_frame->width = state->encoder->width;
 	output_frame->height = state->encoder->height;
-	// TODO: migrate to AV_PIX_FMT_YUV420P + AVCOL_RANGE_JPEG
-	output_frame->format = AV_PIX_FMT_YUVJ420P;
+	output_frame->format = state->encoder->pix_fmt;
+	output_frame->color_range = state->encoder->color_range;
 
-	sws_ctx = sws_getContext(
-		input_frame->width,
-		input_frame->height,
-		input_frame->format,
-		output_frame->width,
-		output_frame->height,
-		output_frame->format,
-		SWS_BICUBIC,
-		NULL,
-		NULL,
-		NULL
-	);
+	sws_ctx = sws_alloc_context();
 	if (sws_ctx == NULL) {
 		vod_log_error(
-			VOD_LOG_ERR, state->request_context->log, 0, "thumb_grabber_resize_frame: sws_getContext failed"
+			VOD_LOG_ERR, state->request_context->log, 0, "thumb_grabber_resize_frame: sws_alloc_context failed"
+		);
+		rc = VOD_ALLOC_FAILED;
+		goto end;
+	}
+
+	av_opt_set_int(sws_ctx, "srcw", input_frame->width, 0);
+	av_opt_set_int(sws_ctx, "srch", input_frame->height, 0);
+	av_opt_set_int(sws_ctx, "src_format", input_frame->format, 0);
+	av_opt_set_int(sws_ctx, "src_range", input_frame->color_range == AVCOL_RANGE_JPEG, 0);
+	av_opt_set_int(sws_ctx, "dstw", output_frame->width, 0);
+	av_opt_set_int(sws_ctx, "dsth", output_frame->height, 0);
+	av_opt_set_int(sws_ctx, "dst_format", output_frame->format, 0);
+	av_opt_set_int(sws_ctx, "dst_range", output_frame->color_range == AVCOL_RANGE_JPEG, 0);
+	av_opt_set_int(sws_ctx, "sws_flags", SWS_BICUBIC, 0);
+
+	avrc = sws_init_context(sws_ctx, NULL, NULL);
+	if (avrc < 0) {
+		vod_log_error(
+			VOD_LOG_ERR,
+			state->request_context->log,
+			0,
+			"thumb_grabber_resize_frame: sws_init_context failed %d",
+			avrc
 		);
 		rc = VOD_UNEXPECTED;
 		goto end;
@@ -696,8 +739,10 @@ thumb_grabber_write_frame(thumb_grabber_state_t* state) {
 	}
 
 #if (VOD_HAVE_LIB_SW_SCALE)
-	if (state->encoder->width != state->decoded_frame->width
-	    || state->encoder->height != state->decoded_frame->height) {
+	if (state->decoded_frame->width != state->encoder->width
+	    || state->decoded_frame->height != state->encoder->height
+	    || state->decoded_frame->format != state->encoder->pix_fmt
+	    || state->decoded_frame->color_range != state->encoder->color_range) {
 		rc = thumb_grabber_resize_frame(state);
 		if (rc != VOD_OK) {
 			return rc;
